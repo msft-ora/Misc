@@ -178,3 +178,55 @@ FROM (
         ) AS canon
     FROM `your_db`.`your_impala_table`
 ) AS t;
+
+
+
+DECLARE @Tables TABLE (SqlSchema sysname, SqlTable sysname, ImpalaDb sysname, ImpalaTable sysname);
+INSERT @Tables (SqlSchema, SqlTable, ImpalaDb, ImpalaTable)
+VALUES
+    (N'dbo', N'Orders', N'warehouse', N'orders'),
+    (N'dbo', N'Customers', N'warehouse', N'customers');
+WITH E AS (
+    SELECT
+        t.SqlSchema,
+        t.SqlTable,
+        t.ImpalaDb,
+        t.ImpalaTable,
+        SqlExpr = STRING_AGG(
+            N'CASE WHEN ' + QUOTENAME(c.COLUMN_NAME) + N' IS NULL THEN N''\N'' ELSE ' +
+            N'REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CONVERT(nvarchar(max), ' + QUOTENAME(c.COLUMN_NAME) + N'), CHAR(92), CHAR(92)+CHAR(92)), ''|'', CHAR(92)+''|''), CHAR(10), CHAR(92)+''n''), CHAR(13), CHAR(92)+''r''), CHAR(9), CHAR(92)+''t'') END',
+            N', '
+        ) WITHIN GROUP (ORDER BY LOWER(c.COLUMN_NAME) COLLATE Latin1_General_100_BIN2),
+        ImpalaExpr = STRING_AGG(
+            N'CASE WHEN `' + LOWER(c.COLUMN_NAME) + N'` IS NULL THEN CONCAT(CHR(92),''N'') ELSE ' +
+            N'REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(`' + LOWER(c.COLUMN_NAME) + N'` AS STRING), CHR(92), CONCAT(CHR(92),CHR(92))), CHR(124), CONCAT(CHR(92),CHR(124))), CHR(10), CONCAT(CHR(92),''n'')), CHR(13), CONCAT(CHR(92),''r'')), CHR(9), CONCAT(CHR(92),''t'')) END',
+            N', '
+        ) WITHIN GROUP (ORDER BY LOWER(c.COLUMN_NAME) COLLATE Latin1_General_100_BIN2)
+    FROM @Tables AS t
+    JOIN INFORMATION_SCHEMA.COLUMNS AS c
+        ON c.TABLE_SCHEMA = t.SqlSchema
+       AND c.TABLE_NAME = t.SqlTable
+    GROUP BY t.SqlSchema, t.SqlTable, t.ImpalaDb, t.ImpalaTable
+)
+SELECT
+    TableName = E.SqlSchema + N'.' + E.SqlTable,
+    GeneratedSqlServerSql =
+        N'WITH r AS (SELECT CONCAT_WS(CHAR(124), ' + E.SqlExpr + N') AS canon FROM ' + QUOTENAME(E.SqlSchema) + N'.' + QUOTENAME(E.SqlTable) + N'), ' +
+        N'b AS (SELECT canon, CASE WHEN PATINDEX(N''%[^ -~]%'', canon COLLATE Latin1_General_100_BIN2) > 0 THEN 1 ELSE 0 END bad FROM r), ' +
+        N'h AS (SELECT HASHBYTES(''SHA2_256'', CONVERT(varbinary(max), CONVERT(varchar(max), canon COLLATE Latin1_General_100_BIN2_UTF8))) d, bad FROM b) ' +
+        N'SELECT COUNT(*) row_cnt, SUM(bad) bad_rows, ' +
+        N'COALESCE(SUM(CONVERT(decimal(38,0), CONVERT(bigint, SUBSTRING(d, 1, 7)))), 0) fp1, ' +
+        N'COALESCE(SUM(CONVERT(decimal(38,0), CONVERT(bigint, SUBSTRING(d, 8, 7)))), 0) fp2, ' +
+        N'COALESCE(SUM(CONVERT(decimal(38,0), CONVERT(bigint, SUBSTRING(d, 15, 7)))), 0) fp3, ' +
+        N'COALESCE(SUM(CONVERT(decimal(38,0), CONVERT(bigint, SUBSTRING(d, 22, 7)))), 0) fp4 FROM h;',
+    GeneratedImpalaSql =
+        N'WITH r AS (SELECT CONCAT_WS(CHR(124), ' + E.ImpalaExpr + N') AS canon FROM `' + E.ImpalaDb + N'`.`' + E.ImpalaTable + N'`), ' +
+        N'b AS (SELECT canon, CASE WHEN length(canon) <> length(regexp_replace(canon, ''[^ -~]'', '''')) THEN 1 ELSE 0 END bad FROM r), ' +
+        N'h AS (SELECT lower(SHA2(canon, 256)) hx, bad FROM b) ' +
+        N'SELECT COUNT(*) row_cnt, SUM(bad) bad_rows, ' +
+        N'COALESCE(SUM(CAST(CONV(SUBSTR(hx, 1, 14), 16, 10) AS DECIMAL(38,0))), 0) fp1, ' +
+        N'COALESCE(SUM(CAST(CONV(SUBSTR(hx, 15, 14), 16, 10) AS DECIMAL(38,0))), 0) fp2, ' +
+        N'COALESCE(SUM(CAST(CONV(SUBSTR(hx, 29, 14), 16, 10) AS DECIMAL(38,0))), 0) fp3, ' +
+        N'COALESCE(SUM(CAST(CONV(SUBSTR(hx, 43, 14), 16, 10) AS DECIMAL(38,0))), 0) fp4 FROM h;'
+FROM E
+ORDER BY E.SqlSchema, E.SqlTable;
