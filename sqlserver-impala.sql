@@ -81,16 +81,100 @@ FROM GeneratedQueries;
 
 
 
-SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=N'dbo' AND TABLE_NAME=N'YourSqlTable' ORDER BY LOWER(COLUMN_NAME) COLLATE Latin1_General_100_BIN2;
-
-DECLARE @s SYSNAME=N'dbo'; DECLARE @t SYSNAME=N'YourSqlTable'; DECLARE @e NVARCHAR(MAX); SELECT @e=STRING_AGG(N'CASE WHEN '+QUOTENAME(COLUMN_NAME)+N' IS NULL THEN N''\N'' ELSE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CONVERT(NVARCHAR(MAX),'+QUOTENAME(COLUMN_NAME)+N'),CHAR(92),CHAR(92)+CHAR(92)),''|'',CHAR(92)+''|''),CHAR(10),CHAR(92)+''n''),CHAR(13),CHAR(92)+''r''),CHAR(9),CHAR(92)+''t'') END',N', ') WITHIN GROUP (ORDER BY LOWER(COLUMN_NAME) COLLATE Latin1_General_100_BIN2) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@s AND TABLE_NAME=@t; DECLARE @sql NVARCHAR(MAX)=N'WITH r AS (SELECT '+@e+N' AS canon FROM '+QUOTENAME(@s)+N'.'+QUOTENAME(@t)+N'), b AS (SELECT canon, CASE WHEN PATINDEX(N''%[^ -~]%'', canon COLLATE Latin1_General_100_BIN2)>0 THEN 1 ELSE 0 END bad FROM r), h AS (SELECT HASHBYTES(''SHA2_256'', CONVERT(VARBINARY(MAX), CONVERT(VARCHAR(MAX), canon COLLATE Latin1_General_100_BIN2_UTF8))) d, bad FROM b) SELECT COUNT(*) row_cnt, SUM(bad) bad_rows, COALESCE(SUM(CONVERT(DECIMAL(38,0),CONVERT(BIGINT,SUBSTRING(d,1,7)))),0) fp1, COALESCE(SUM(CONVERT(DECIMAL(38,0),CONVERT(BIGINT,SUBSTRING(d,8,7)))),0) fp2, COALESCE(SUM(CONVERT(DECIMAL(38,0),CONVERT(BIGINT,SUBSTRING(d,15,7)))),0) fp3, COALESCE(SUM(CONVERT(DECIMAL(38,0),CONVERT(BIGINT,SUBSTRING(d,22,7)))),0) fp4 FROM h;'; EXEC sp_executesql @sql;
 
 
+DECLARE @SqlSchema sysname = N'dbo';
+DECLARE @SqlTable sysname = N'YourSqlTable';
+DECLARE @ImpalaDb sysname = N'your_db';
+DECLARE @ImpalaTable sysname = N'your_impala_table';
+DECLARE @Expr nvarchar(max);
+SELECT @Expr = STRING_AGG(
+    N'CASE WHEN `' + LOWER(COLUMN_NAME) + N'` IS NULL THEN CONCAT(CHR(92),''N'') ELSE ' +
+    N'REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(`' + LOWER(COLUMN_NAME) + N'` AS STRING),' +
+    N'CHR(92),CONCAT(CHR(92),CHR(92))),CHR(124),CONCAT(CHR(92),CHR(124))),' +
+    N'CHR(10),CONCAT(CHR(92),''n'')),CHR(13),CONCAT(CHR(92),''r'')),' +
+    N'CHR(9),CONCAT(CHR(92),''t'')) END',
+    N',' + CHAR(13) + CHAR(10) + N'        '
+) WITHIN GROUP (ORDER BY LOWER(COLUMN_NAME) COLLATE Latin1_General_100_BIN2)
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_SCHEMA = @SqlSchema
+  AND TABLE_NAME = @SqlTable;
+SELECT
+    N'SELECT' + CHAR(13) + CHAR(10) +
+    N'    CONCAT_WS(' + CHAR(13) + CHAR(10) +
+    N'        CHR(124),' + CHAR(13) + CHAR(10) +
+    N'        ' + @Expr + CHAR(13) + CHAR(10) +
+    N'    ) AS canon' + CHAR(13) + CHAR(10) +
+    N'FROM `' + @ImpalaDb + N'`.`' + @ImpalaTable + N'`;' AS GeneratedImpalaSql;
 
 
-DESCRIBE `your_db`.`your_impala_table`;
 
-
-
-SELECT COUNT(*) row_cnt, SUM(CASE WHEN length(canon)<>length(regexp_replace(canon,'[^ -~]','')) THEN 1 ELSE 0 END) bad_rows, COALESCE(SUM(CAST(CONV(SUBSTR(LOWER(SHA2(canon,256)),1,14),16,10) AS DECIMAL(38,0))),0) fp1, COALESCE(SUM(CAST(CONV(SUBSTR(LOWER(SHA2(canon,256)),15,14),16,10) AS DECIMAL(38,0))),0) fp2, COALESCE(SUM(CAST(CONV(SUBSTR(LOWER(SHA2(canon,256)),29,14),16,10) AS DECIMAL(38,0))),0) fp3, COALESCE(SUM(CAST(CONV(SUBSTR(LOWER(SHA2(canon,256)),43,14),16,10) AS DECIMAL(38,0))),0) fp4 FROM (SELECT CONCAT_WS(CHR(124), CASE WHEN `col1` IS NULL THEN CONCAT(CHR(92),'N') ELSE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(`col1` AS STRING),CHR(92),CONCAT(CHR(92),CHR(92))),CHR(124),CONCAT(CHR(92),CHR(124))),CHR(10),CONCAT(CHR(92),'n')),CHR(13),CONCAT(CHR(92),'r')),CHR(9),CONCAT(CHR(92),'t')) END, CASE WHEN `col2` IS NULL THEN CONCAT(CHR(92),'N') ELSE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(CAST(`col2` AS STRING),CHR(92),CONCAT(CHR(92),CHR(92))),CHR(124),CONCAT(CHR(92),CHR(124))),CHR(10),CONCAT(CHR(92),'n')),CHR(13),CONCAT(CHR(92),'r')),CHR(9),CONCAT(CHR(92),'t')) END) canon FROM `your_db`.`your_impala_table`) t;
-
+SELECT
+    COUNT(*) AS row_cnt,
+    SUM(
+        CASE
+            WHEN length(canon) <> length(regexp_replace(canon, '[^ -~]', '')) THEN 1
+            ELSE 0
+        END
+    ) AS bad_rows,
+    COALESCE(
+        SUM(CAST(CONV(SUBSTR(LOWER(SHA2(canon, 256)), 1, 14), 16, 10) AS DECIMAL(38,0))),
+        0
+    ) AS fp1,
+    COALESCE(
+        SUM(CAST(CONV(SUBSTR(LOWER(SHA2(canon, 256)), 15, 14), 16, 10) AS DECIMAL(38,0))),
+        0
+    ) AS fp2,
+    COALESCE(
+        SUM(CAST(CONV(SUBSTR(LOWER(SHA2(canon, 256)), 29, 14), 16, 10) AS DECIMAL(38,0))),
+        0
+    ) AS fp3,
+    COALESCE(
+        SUM(CAST(CONV(SUBSTR(LOWER(SHA2(canon, 256)), 43, 14), 16, 10) AS DECIMAL(38,0))),
+        0
+    ) AS fp4
+FROM (
+    SELECT
+        CONCAT_WS(
+            CHR(124),
+            CASE
+                WHEN `col1` IS NULL THEN CONCAT(CHR(92), 'N')
+                ELSE REPLACE(
+                    REPLACE(
+                        REPLACE(
+                            REPLACE(
+                                REPLACE(
+                                    CAST(`col1` AS STRING),
+                                    CHR(92), CONCAT(CHR(92), CHR(92))
+                                ),
+                                CHR(124), CONCAT(CHR(92), CHR(124))
+                            ),
+                            CHR(10), CONCAT(CHR(92), 'n')
+                        ),
+                        CHR(13), CONCAT(CHR(92), 'r')
+                    ),
+                    CHR(9), CONCAT(CHR(92), 't')
+                )
+            END,
+            CASE
+                WHEN `col2` IS NULL THEN CONCAT(CHR(92), 'N')
+                ELSE REPLACE(
+                    REPLACE(
+                        REPLACE(
+                            REPLACE(
+                                REPLACE(
+                                    CAST(`col2` AS STRING),
+                                    CHR(92), CONCAT(CHR(92), CHR(92))
+                                ),
+                                CHR(124), CONCAT(CHR(92), CHR(124))
+                            ),
+                            CHR(10), CONCAT(CHR(92), 'n')
+                        ),
+                        CHR(13), CONCAT(CHR(92), 'r')
+                    ),
+                    CHR(9), CONCAT(CHR(92), 't')
+                )
+            END
+        ) AS canon
+    FROM `your_db`.`your_impala_table`
+) AS t;
